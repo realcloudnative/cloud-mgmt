@@ -1,0 +1,11 @@
+[project]
+name = "scheduled-switch"
+version = "0.1.0"
+description = "Lambda durable function for scheduled resource switching"
+requires-python = ">=3.11"
+dependencies = [
+    "aws-durable-execution-sdk-python",
+    "boto3",
+]
+
+

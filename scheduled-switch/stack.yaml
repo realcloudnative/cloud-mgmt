@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Conditional resource stack — represents expensive infrastructure (NAT Gateway, ALB, etc.)
+  controlled by a Lambda durable function. SwitchedOff by default.
+
+Parameters:
+  SwitchState:
+    Type: String
+    AllowedValues:
+      - SwitchedOn
+      - SwitchedOff
+    Default: SwitchedOff
+    Description: Controls whether the expensive conditional resource is provisioned.
+
+Conditions:
+  IsOn: !Equals [!Ref SwitchState, SwitchedOn]
+
+Resources:
+  # Always present — prevents empty-template error when SwitchedOff
+  DummyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/scheduled-switch/${AWS::StackName}/dummy"
+      Type: String
+      Value: "present"
+      Description: Placeholder parameter always present regardless of switch state.
+
+  # Conditional — represents expensive infrastructure like NAT Gateway or ALB
+  ExpensiveParameter:
+    Type: AWS::SSM::Parameter
+    Condition: IsOn
+    Properties:
+      Name: !Sub "/scheduled-switch/${AWS::StackName}/expensive"
+      Type: String
+      Value: "running"
+      Description: Represents an expensive resource (NAT Gateway, ALB, etc.) — only present when switched on.
+
+Outputs:
+  StackName:
+    Value: !Ref AWS::StackName
+    Description: The name of this stack (used by the Lambda durable function).

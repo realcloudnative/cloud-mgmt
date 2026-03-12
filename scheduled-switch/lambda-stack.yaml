@@ -1,0 +1,161 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Lambda durable function + EventBridge schedule for conditional resource switching.
+  NOTE: Lambda durable functions are available in us-east-2 (Ohio) and eu-central-1 (Frankfurt).
+  Deploy with: ./build.sh (uses aws cloudformation package to handle S3 upload automatically)
+
+Parameters:
+  MainStackName:
+    Type: String
+    Default: scheduled-switch-main
+    Description: Name of the main stack (stack.yaml) that this Lambda will control.
+
+  PauseSeconds:
+    Type: Number
+    Default: 28800
+    Description: Seconds to keep the resource switched on (default 8 hours = 28800).
+
+  AlertTopicArn:
+    Type: String
+    Description: SNS topic ARN to notify on CloudFormation stack update failures. Leave empty to skip alerting.
+    Default: ""
+
+Conditions:
+  HasAlertTopic: !Not [!Equals [!Ref AlertTopicArn, ""]]
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicDurableExecutionRolePolicy"
+      Policies:
+        - PolicyName: CloudFormationSwitchPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:UpdateStack
+                  - cloudformation:DescribeStacks
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${MainStackName}/*"
+
+  SwitchFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-switch"
+      Runtime: python3.13
+      Handler: handler.handler
+      Code: lambda/
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 900
+      Environment:
+        Variables:
+          STACK_NAME: !Ref MainStackName
+          PAUSE_SECONDS: !Ref PauseSeconds
+      # DurableConfig enables durable execution — changes here force resource replacement,
+      # so set ExecutionTimeout generously upfront.
+      DurableConfig:
+        ExecutionTimeout: 86400     # 24 hours max execution (covers 8h pause + overhead)
+        RetentionPeriodInDays: 7
+
+  # Published version — required for durable function invocations
+  SwitchFunctionVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref SwitchFunction
+
+  # Alias pointing to the published version — EventBridge targets this
+  SwitchFunctionAlias:
+    Type: AWS::Lambda::Alias
+    Properties:
+      Name: live
+      FunctionName: !Ref SwitchFunction
+      FunctionVersion: !GetAtt SwitchFunctionVersion.Version
+
+  # Allow EventBridge to invoke the Lambda alias
+  LambdaPermissionForEvents:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SwitchFunctionAlias
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DailyScheduleRule.Arn
+
+  # IAM role for EventBridge to invoke Lambda
+  EventBridgeInvokeLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeLambdaAlias
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Ref SwitchFunctionAlias
+
+  # EventBridge rule: fires daily at 7 AM UTC
+  # NOTE: Lambda durable functions available in us-east-2 (Ohio) and eu-central-1 (Frankfurt)
+  DailyScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-daily-switch"
+      Description: "Triggers scheduled resource switch at 7 AM UTC daily"
+      ScheduleExpression: "cron(0 7 * * ? *)"
+      State: ENABLED
+      Targets:
+        - Id: SwitchFunctionTarget
+          Arn: !Ref SwitchFunctionAlias
+          RoleArn: !GetAtt EventBridgeInvokeLambdaRole.Arn
+
+  # EventBridge rule: alerts on CloudFormation stack update failures for the main stack.
+  # Catches UPDATE_ROLLBACK_IN_PROGRESS (earliest signal of a failed update) and
+  # UPDATE_ROLLBACK_FAILED (stuck — manual intervention required).
+  StackFailureRule:
+    Type: AWS::Events::Rule
+    Condition: HasAlertTopic
+    Properties:
+      Name: !Sub "${AWS::StackName}-stack-failure"
+      Description: !Sub "Alerts when ${MainStackName} stack update fails"
+      EventPattern:
+        source:
+          - aws.cloudformation
+        detail-type:
+          - CloudFormation Stack Status Change
+        detail:
+          stack-id:
+            - prefix: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${MainStackName}/"
+          status-details:
+            current-status:
+              - UPDATE_ROLLBACK_IN_PROGRESS
+              - UPDATE_ROLLBACK_FAILED
+      State: ENABLED
+      Targets:
+        - Id: AlertTopic
+          Arn: !Ref AlertTopicArn
+
+Outputs:
+  FunctionArn:
+    Value: !Ref SwitchFunctionAlias
+    Description: ARN of the Lambda alias to invoke for manual testing.
+
+  ScheduleRule:
+    Value: !Ref DailyScheduleRule
+    Description: EventBridge rule name for the daily 7 AM UTC schedule.
