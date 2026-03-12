@@ -48,6 +48,14 @@ Resources:
                   - cloudformation:DescribeStacks
                 Resource:
                   - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${MainStackName}/*"
+              # SSM permissions allow CloudFormation to create/delete SSM parameters
+              # when it processes stack updates using this Lambda's role (no explicit CFN role set).
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/scheduled-switch/${MainStackName}/*"
 
   SwitchFunction:
     Type: AWS::Lambda::Function
