@@ -4,6 +4,12 @@ A working example of a **Lambda durable function** that toggles a CloudFormation
 
 The conditional resource here is represented by an SSM Parameter. Replace it with a NAT Gateway, ALB, RDS instance, or any other resource you want to run only during business hours.
 
+### Why this pattern exists
+
+Cloud resources cost money even when idle. A NAT Gateway charges ~$0.045/hour just for existing, independent of traffic. An ALB is similar. For development and staging environments that are only used during business hours, this adds up to real waste over nights and weekends. This pattern eliminates that by managing the resource lifecycle automatically, without any manual intervention.
+
+The key design choice is to toggle resources via a **CloudFormation parameter update** rather than by creating and deleting the stack. The stack remains intact at all times; only the conditional resource inside it appears and disappears. This preserves stack outputs, avoids re-provisioning dependent infrastructure, and keeps the blast radius small — a failed update rolls back to the previous known-good state rather than leaving you with a partially deleted stack.
+
 ---
 
 ## Architecture
@@ -42,6 +48,32 @@ The function uses three durable primitives:
 - `context.step(fn(...), name=...)` — executes a retryable, idempotent unit of work; result is memoized so replays skip re-execution
 - `context.wait(duration, name=...)` — durable sleep; Lambda is not running during this time
 - `context.wait_for_condition(check, config, name=...)` — polls a condition function on a durable timer; Lambda wakes periodically to check, sleeps between checks
+
+### Why not SAM?
+
+SAM is the natural first instinct for Lambda deployments, but SAM CLI rejects `DurableConfig` as an unknown property on `AWS::Serverless::Function`. The workaround is to use plain `AWS::Lambda::Function` with `aws cloudformation package`, which handles S3 upload automatically and is otherwise equivalent.
+
+### Published version and alias are required
+
+Durable functions cannot be invoked against `$LATEST`. Attempting an async invocation against `$LATEST` fails with `InvalidParameterValueException`. The stack creates a `AWS::Lambda::Version` and an `AWS::Lambda::Alias` pointing to it; EventBridge and manual invocations both target the alias ARN.
+
+### `DurableConfig` changes force resource replacement
+
+`DurableConfig` is a property that defines the fundamental execution model of the function. Any change to it — including adjusting `ExecutionTimeout` — triggers replacement of the Lambda resource, which terminates all in-flight durable executions. Set `ExecutionTimeout` generously upfront rather than adjusting it later.
+
+### `wait_for_condition` vs a boto3 waiter
+
+An earlier version of this handler used `cfn.get_waiter("stack_update_complete")` inside the durable step. That works, but the boto3 waiter blocks synchronously — Lambda runs continuously, polling every 15 seconds until the update completes. A typical CloudFormation update takes 30–90 seconds, so the cost is small but real, and it scales badly if the stack update ever stalls.
+
+`wait_for_condition` solves this properly: Lambda wakes every 5 minutes to run the check function, then suspends again. No compute runs between polls.
+
+### Steps must be idempotent
+
+Durable steps are memoized on first execution and skipped on replay. But if a step raises an exception, the runtime will retry it. This means step functions must be safe to call more than once with the same arguments. The `"No updates are to be performed"` exception handling in `set_switch_state` is what provides that guarantee — a replay after a partial failure won't try to re-apply an already-applied parameter change and raise unexpectedly.
+
+### Concurrent executions are safe but additive
+
+Invoking the function while a scheduled execution is already running starts a second independent durable execution. Both handle idempotently — each will hit "No updates are to be performed" on `switch-on` if the stack is already in the target state, and will independently switch off after the hold duration. The daily schedule naturally avoids this since the full cycle completes well within 24 hours, but it is worth knowing if you invoke manually.
 
 ---
 
@@ -143,7 +175,7 @@ Resources:
       ...
 ```
 
-Keep `DummyParameter` — CloudFormation rejects templates with zero resources, which would happen when `SwitchedOff` and all real resources are conditional.
+Keep `DummyParameter` — CloudFormation rejects templates with zero resources, which would happen when `SwitchedOff` and all real resources are conditional. An SSM parameter is the cheapest possible placeholder: free tier covers it and it creates in seconds.
 
 ## Adding failure alerts
 
