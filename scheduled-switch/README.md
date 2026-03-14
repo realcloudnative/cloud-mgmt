@@ -1,5 +1,9 @@
 # scheduled-switch
 
+> [!NOTE]
+> **Made with ❤️  by Claude Code**
+> This repository was created by an AI coding agent with minimal human oversight. The code examples, documentation, and infrastructure templates were generated to demonstrate switching on/off resources through CloudFormation. While functional and tested, please review thoroughly before real-world use.
+
 A working example of a **Lambda durable function** that toggles a CloudFormation resource on a daily schedule. The pattern: a resource is off by default, switched on at 7 AM UTC, held for a configurable duration (default 8 hours), then switched off automatically — with no compute charges during the wait.
 
 The conditional resource here is represented by an SSM Parameter. Replace it with a NAT Gateway, ALB, RDS instance, or any other resource you want to run only during business hours.
