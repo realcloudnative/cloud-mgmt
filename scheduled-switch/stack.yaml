@@ -16,15 +16,6 @@ Conditions:
   IsOn: !Equals [!Ref SwitchState, SwitchedOn]
 
 Resources:
-  # Always present — prevents empty-template error when SwitchedOff
-  DummyParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/scheduled-switch/${AWS::StackName}/dummy"
-      Type: String
-      Value: "present"
-      Description: Placeholder parameter always present regardless of switch state.
-
   # Conditional — represents expensive infrastructure like NAT Gateway or ALB
   ExpensiveParameter:
     Type: AWS::SSM::Parameter

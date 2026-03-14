@@ -2,3 +2,4 @@ lambda/.build/
 lambda/.venv/
 function.zip
 lambda-stack-packaged.yaml
+.aws-sam/

@@ -45,21 +45,15 @@ Two CloudFormation stacks:
 
 Lambda durable functions (announced at re:Invent 2025) are a code-first alternative to Step Functions. The key capability used here is **durable suspension**: `context.wait(Duration.from_seconds(N))` pauses the execution for N seconds with no Lambda compute running. For an 8-hour hold this saves the equivalent of 8 hours of Lambda invocation time.
 
-**Regional availability**: us-east-2 (Ohio) and eu-central-1 (Frankfurt).
-
 The function uses three durable primitives:
 
 - `context.step(fn(...), name=...)` — executes a retryable, idempotent unit of work; result is memoized so replays skip re-execution
 - `context.wait(duration, name=...)` — durable sleep; Lambda is not running during this time
 - `context.wait_for_condition(check, config, name=...)` — polls a condition function on a durable timer; Lambda wakes periodically to check, sleeps between checks
 
-### Why not SAM?
-
-SAM is the natural first instinct for Lambda deployments, but SAM CLI rejects `DurableConfig` as an unknown property on `AWS::Serverless::Function`. The workaround is to use plain `AWS::Lambda::Function` with `aws cloudformation package`, which handles S3 upload automatically and is otherwise equivalent.
-
 ### Published version and alias are required
 
-Durable functions cannot be invoked against `$LATEST`. Attempting an async invocation against `$LATEST` fails with `InvalidParameterValueException`. The stack creates a `AWS::Lambda::Version` and an `AWS::Lambda::Alias` pointing to it; EventBridge and manual invocations both target the alias ARN.
+Durable functions cannot be invoked against `$LATEST`. Attempting an async invocation against `$LATEST` fails with `InvalidParameterValueException`. `AutoPublishAlias: live` in the SAM template handles version publishing and alias creation automatically; EventBridge and manual invocations both target the alias ARN.
 
 ### `DurableConfig` changes force resource replacement
 
@@ -86,12 +80,12 @@ Invoking the function while a scheduled execution is already running starts a se
 ```
 scheduled-switch/
 ├── stack.yaml           # Conditional resource stack
-├── lambda-stack.yaml    # Durable function + EventBridge schedule
+├── lambda-stack.yaml    # SAM template: durable function + EventBridge schedule
 ├── lambda/
 │   ├── handler.py       # Durable function implementation
 │   └── pyproject.toml   # Python dependencies (uv)
-├── provision.sh         # One-time: creates stack.yaml in AWS
-└── build.sh             # Packages and deploys lambda-stack.yaml
+├── deploy-resource-stack.sh         # One-time: creates stack.yaml in AWS
+└── deploy-lambda-stack.sh             # sam build + sam deploy
 ```
 
 ---
@@ -101,24 +95,24 @@ scheduled-switch/
 ### Prerequisites
 
 - AWS CLI configured (`aws sso login` or equivalent)
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html) installed
 - [uv](https://docs.astral.sh/uv/) installed
-- An S3 bucket in the target region (the `build.sh` script uses `demo-adriaan` — update it for your account)
 
 ### 1. Create the main stack
 
 ```bash
-./provision.sh [stack-name] [region]
+./deploy-resource-stack.sh [stack-name] [region]
 # defaults: scheduled-switch-main, eu-central-1
 ```
 
 ### 2. Build and deploy the Lambda stack
 
 ```bash
-./build.sh [main-stack-name] [region]
+./deploy-lambda-stack.sh [main-stack-name] [region]
 # defaults: scheduled-switch-main, eu-central-1
 ```
 
-`build.sh` uses `aws cloudformation package` to zip and upload the Lambda code to S3 automatically, then deploys the Lambda stack via `aws cloudformation deploy`.
+`deploy-lambda-stack.sh` runs `sam build` to package the Lambda code and `sam deploy` to deploy the stack. The `--resolve-s3` flag lets SAM manage the S3 bucket for deployment artifacts automatically.
 
 ### 3. Test manually
 
@@ -145,20 +139,20 @@ The response includes a `DurableExecutionArn` you can use to track execution sta
 
 ## Modifying the schedule
 
-Edit `DailyScheduleRule` in `lambda-stack.yaml`:
+Edit `DailySchedule` under `Events` in `lambda-stack.yaml`:
 
 ```yaml
-ScheduleExpression: "cron(0 7 * * ? *)"  # 7 AM UTC daily
+Schedule: "cron(0 7 * * ? *)"  # 7 AM UTC daily
 ```
 
-Then redeploy with `./build.sh`.
+Then redeploy with `./deploy-lambda-stack.sh`.
 
 ## Modifying the hold duration
 
 Pass `PauseSeconds` as a parameter override:
 
 ```bash
-./build.sh scheduled-switch-main eu-central-1 --parameter-overrides PauseSeconds=3600
+./deploy-lambda-stack.sh scheduled-switch-main eu-central-1 --parameter-overrides PauseSeconds=3600
 ```
 
 Or edit the default in `lambda-stack.yaml` (`Default: 28800`).
@@ -186,14 +180,8 @@ Keep `DummyParameter` — CloudFormation rejects templates with zero resources, 
 Pass an SNS topic ARN when deploying the Lambda stack:
 
 ```bash
-aws cloudformation deploy \
-  --template-file lambda-stack-packaged.yaml \
-  --stack-name scheduled-switch-lambda \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region eu-central-1 \
-  --parameter-overrides \
-    MainStackName=scheduled-switch-main \
-    AlertTopicArn=arn:aws:sns:eu-central-1:123456789012:my-alerts
+./deploy-lambda-stack.sh scheduled-switch-main eu-central-1 --parameter-overrides \
+  AlertTopicArn=arn:aws:sns:eu-central-1:123456789012:my-alerts
 ```
 
 This enables `StackFailureRule`, an EventBridge rule that fires on `UPDATE_ROLLBACK_IN_PROGRESS` — the earliest signal of a failed stack update, before CloudFormation has finished rolling back.
@@ -217,4 +205,4 @@ Resource:
   - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/scheduled-switch/${MainStackName}/*"
 ```
 
-If you switch from SSM parameters to a different resource type (e.g., EC2), add the corresponding permissions to `LambdaExecutionRole` in `lambda-stack.yaml`.
+If you switch from SSM parameters to a different resource type (for example, EC2), add the corresponding permissions to the `Policies` list on `SwitchFunction` in `lambda-stack.yaml`.
