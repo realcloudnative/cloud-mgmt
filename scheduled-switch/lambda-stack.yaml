@@ -67,7 +67,7 @@ Resources:
         DailyScheduleV2:
           Type: ScheduleV2
           Properties:
-            ScheduleExpression: "cron(0 8 * * ? *)"
+            ScheduleExpression: "cron(0 7 ? * MON-FRI *)"
             ScheduleExpressionTimezone: "Europe/Amsterdam"
             FlexibleTimeWindow:
               Mode: "OFF"
