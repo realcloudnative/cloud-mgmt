@@ -1,0 +1,366 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Home / small-time AWS Organization guardrails — a set of Deny-Unless
+  Service Control Policies (SCPs). Deploy this stack in the Organizations
+  MANAGEMENT account (or a delegated SCP administrator). The management
+  account is never affected by SCPs, so it remains your escape hatch.
+
+Parameters:
+  TargetIds:
+    Type: CommaDelimitedList
+    Description: >
+      Root id (r-xxxx) and/or OU ids (ou-xxxx-xxxxxxxx) that every policy in
+      this stack attaches to. The default FullAWSAccess SCP must remain
+      attached to these targets — these Deny policies subtract from it.
+
+  EnableBaselineSecurity:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Attach the baseline-security SCP (IMDSv2, protect CloudTrail/GuardDuty, block leaving org, keep EBS default encryption).
+
+  EnableCostControl:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: Attach the cost-control SCP (block RI/capacity commitments and Dedicated tenancy). Domain registration stays allowed.
+
+Conditions:
+  AttachBaselineSecurity: !Equals [!Ref EnableBaselineSecurity, "true"]
+  AttachCostControl: !Equals [!Ref EnableCostControl, "true"]
+
+Resources:
+  RegionLockPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: home-guardrail-region-lock
+      Type: SERVICE_CONTROL_POLICY
+      Description: Deny all actions outside the allowed regions, exempting global/region-less services.
+      TargetIds: !Ref TargetIds
+      Content: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyOutsideAllowedRegions",
+              "Effect": "Deny",
+              "NotAction": [
+                "account:*",
+                "artifact:*",
+                "aws-external-anthropic:*",
+                "aws-portal:*",
+                "billing:*",
+                "budgets:*",
+                "ce:*",
+                "consolidatedbilling:*",
+                "cur:*",
+                "freetier:*",
+                "invoicing:*",
+                "payments:*",
+                "tax:*",
+                "bcm-data-exports:*",
+                "cost-optimization-hub:*",
+                "purchase-orders:*",
+                "cloudfront:*",
+                "cloudfront-keyvaluestore:*",
+                "health:*",
+                "iam:*",
+                "organizations:*",
+                "route53:*",
+                "route53domains:*",
+                "sts:*",
+                "support:*",
+                "supportplans:*",
+                "trustedadvisor:*"
+              ],
+              "Resource": "*",
+              "Condition": {
+                "StringNotEquals": {
+                  "aws:RequestedRegion": [
+                    "us-east-1",
+                    "us-west-2",
+                    "eu-central-1",
+                    "eu-north-1",
+                    "ap-southeast-1"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+
+  ServiceAllowlistPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: home-guardrail-service-allowlist
+      Type: SERVICE_CONTROL_POLICY
+      Description: Deny any service action not in the home allowlist.
+      TargetIds: !Ref TargetIds
+      Content: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyServicesNotInAllowlist",
+              "Effect": "Deny",
+              "NotAction": [
+                "bedrock:*",
+                "bedrock-agentcore:*",
+                "aws-external-anthropic:*",
+                "events:*",
+                "scheduler:*",
+                "schemas:*",
+                "pipes:*",
+                "transcribe:*",
+                "translate:*",
+                "apigateway:*",
+                "execute-api:*",
+                "athena:*",
+                "glue:GetDatabase",
+                "glue:GetDatabases",
+                "glue:GetTable",
+                "glue:GetTables",
+                "glue:GetPartition",
+                "glue:GetPartitions",
+                "glue:BatchGetPartition",
+                "glue:CreateDatabase",
+                "glue:CreateTable",
+                "glue:UpdateTable",
+                "glue:DeleteTable",
+                "glue:CreatePartition",
+                "glue:BatchCreatePartition",
+                "glue:UpdatePartition",
+                "glue:DeletePartition",
+                "glue:BatchDeletePartition",
+                "apprunner:*",
+                "artifact:*",
+                "health:*",
+                "organizations:*",
+                "aws-portal:*",
+                "billing:*",
+                "account:*",
+                "ce:*",
+                "cur:*",
+                "budgets:*",
+                "consolidatedbilling:*",
+                "freetier:*",
+                "invoicing:*",
+                "payments:*",
+                "tax:*",
+                "bcm-data-exports:*",
+                "cost-optimization-hub:*",
+                "purchase-orders:*",
+                "acm:*",
+                "cloudformation:*",
+                "cloudfront:*",
+                "cloudfront-keyvaluestore:*",
+                "cloudshell:*",
+                "cloudtrail:*",
+                "cloudwatch:*",
+                "logs:*",
+                "codeartifact:*",
+                "codebuild:*",
+                "codecommit:*",
+                "codedeploy:*",
+                "codepipeline:*",
+                "cognito-idp:*",
+                "cognito-identity:*",
+                "cognito-sync:*",
+                "dynamodb:*",
+                "dax:*",
+                "ec2:*",
+                "ec2messages:*",
+                "imagebuilder:*",
+                "elasticfilesystem:*",
+                "elasticloadbalancing:*",
+                "autoscaling:*",
+                "application-autoscaling:*",
+                "ecr:*",
+                "ecr-public:*",
+                "ecs:*",
+                "guardduty:*",
+                "iam:*",
+                "sso:*",
+                "sso-directory:*",
+                "identitystore:*",
+                "sso-oauth:*",
+                "kms:*",
+                "kinesis:*",
+                "firehose:*",
+                "kinesisanalytics:*",
+                "kinesisvideo:*",
+                "lambda:*",
+                "mediaconvert:*",
+                "ram:*",
+                "route53:*",
+                "route53domains:*",
+                "route53resolver:*",
+                "s3:*",
+                "s3-object-lambda:*",
+                "servicequotas:*",
+                "sns:*",
+                "sqs:*",
+                "states:*",
+                "ssm:*",
+                "ssmmessages:*",
+                "trustedadvisor:*",
+                "support:*",
+                "supportplans:*",
+                "sts:*",
+                "tag:*"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+
+  Ec2InstanceSizePolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: home-guardrail-ec2-instance-size
+      Type: SERVICE_CONTROL_POLICY
+      Description: Deny launching EC2 instances larger than *.nano / *.micro / *.small.
+      TargetIds: !Ref TargetIds
+      Content: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyEc2LargerThanSmall",
+              "Effect": "Deny",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:*:*:instance/*",
+              "Condition": {
+                "StringNotLike": {
+                  "ec2:InstanceType": [
+                    "*.nano",
+                    "*.micro",
+                    "*.small"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+
+  BaselineSecurityPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: AttachBaselineSecurity
+    Properties:
+      Name: home-guardrail-baseline-security
+      Type: SERVICE_CONTROL_POLICY
+      Description: Require IMDSv2, protect CloudTrail/GuardDuty, block leaving the org, keep EBS default encryption.
+      TargetIds: !Ref TargetIds
+      Content: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "RequireImdsv2OnLaunch",
+              "Effect": "Deny",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:*:*:instance/*",
+              "Condition": {
+                "StringNotEquals": {
+                  "ec2:MetadataHttpTokens": "required"
+                }
+              }
+            },
+            {
+              "Sid": "ProtectCloudTrail",
+              "Effect": "Deny",
+              "Action": [
+                "cloudtrail:StopLogging",
+                "cloudtrail:DeleteTrail",
+                "cloudtrail:UpdateTrail",
+                "cloudtrail:PutEventSelectors"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "ProtectGuardDuty",
+              "Effect": "Deny",
+              "Action": [
+                "guardduty:DeleteDetector",
+                "guardduty:UpdateDetector",
+                "guardduty:DisassociateFromMasterAccount",
+                "guardduty:DisassociateFromAdministratorAccount",
+                "guardduty:StopMonitoringMembers",
+                "guardduty:DeleteMembers",
+                "guardduty:DeletePublishingDestination"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyLeaveOrganization",
+              "Effect": "Deny",
+              "Action": "organizations:LeaveOrganization",
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyDisableEbsEncryptionByDefault",
+              "Effect": "Deny",
+              "Action": "ec2:DisableEbsEncryptionByDefault",
+              "Resource": "*"
+            }
+          ]
+        }
+
+  CostControlPolicy:
+    Type: AWS::Organizations::Policy
+    Condition: AttachCostControl
+    Properties:
+      Name: home-guardrail-cost-control
+      Type: SERVICE_CONTROL_POLICY
+      Description: Block reserved/capacity commitments and Dedicated tenancy. Domain registration stays allowed.
+      TargetIds: !Ref TargetIds
+      Content: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyEc2CapacityCommitments",
+              "Effect": "Deny",
+              "Action": [
+                "ec2:PurchaseReservedInstancesOffering",
+                "ec2:ModifyReservedInstances",
+                "ec2:PurchaseCapacityBlock",
+                "ec2:PurchaseHostReservation",
+                "ec2:CreateCapacityReservation",
+                "ec2:PurchaseScheduledInstances",
+                "ec2:AllocateHosts"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyDedicatedTenancy",
+              "Effect": "Deny",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:*:*:instance/*",
+              "Condition": {
+                "StringNotEquals": {
+                  "ec2:Tenancy": "default"
+                }
+              }
+            }
+          ]
+        }
+
+Outputs:
+  RegionLockPolicyId:
+    Description: Policy id of the region-lock SCP.
+    Value: !Ref RegionLockPolicy
+  ServiceAllowlistPolicyId:
+    Description: Policy id of the service-allowlist SCP.
+    Value: !Ref ServiceAllowlistPolicy
+  Ec2InstanceSizePolicyId:
+    Description: Policy id of the EC2 instance-size SCP.
+    Value: !Ref Ec2InstanceSizePolicy
+  BaselineSecurityPolicyId:
+    Condition: AttachBaselineSecurity
+    Description: Policy id of the baseline-security SCP.
+    Value: !Ref BaselineSecurityPolicy
+  CostControlPolicyId:
+    Condition: AttachCostControl
+    Description: Policy id of the cost-control SCP.
+    Value: !Ref CostControlPolicy
