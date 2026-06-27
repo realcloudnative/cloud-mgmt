@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Home baseline — enable Amazon GuardDuty in this account + region. GuardDuty is
+  regional, so deploy this stack once per region you care about (see
+  deploy-guardduty.sh). This is the only home-baseline setting with a native
+  CloudFormation resource; the rest are applied by apply-account-baseline.sh.
+
+Parameters:
+  FindingPublishingFrequency:
+    Type: String
+    AllowedValues: ["FIFTEEN_MINUTES", "ONE_HOUR", "SIX_HOURS"]
+    Default: SIX_HOURS
+    Description: How often GuardDuty publishes finding updates. SIX_HOURS is the calm, home-friendly default.
+
+Resources:
+  Detector:
+    Type: AWS::GuardDuty::Detector
+    Properties:
+      Enable: true
+      FindingPublishingFrequency: !Ref FindingPublishingFrequency
+      # Foundational-only: CloudTrail mgmt events + VPC flow logs + DNS stay on
+      # (they can't be disabled). Every optional, usage-billed protection plan is
+      # explicitly OFF — especially S3_DATA_EVENTS, the main home bill-shock risk.
+      Features:
+        - Name: S3_DATA_EVENTS
+          Status: DISABLED
+        - Name: EBS_MALWARE_PROTECTION
+          Status: DISABLED
+        - Name: RDS_LOGIN_EVENTS
+          Status: DISABLED
+        - Name: LAMBDA_NETWORK_LOGS
+          Status: DISABLED
+        - Name: RUNTIME_MONITORING
+          Status: DISABLED
+        - Name: EKS_AUDIT_LOGS
+          Status: DISABLED
+
+Outputs:
+  DetectorId:
+    Description: GuardDuty detector id for this region.
+    Value: !Ref Detector

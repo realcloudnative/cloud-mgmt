@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Automatic cost-overrun failsafe. Deploy in the Organizations MANAGEMENT
+  (payer) account. Watches ACTUAL spend for the dev account and, at a high "3x"
+  threshold, AUTOMATICALLY attaches a quarantine SCP that stops new
+  cost-generating actions while leaving read / stop / delete / billing intact.
+
+  This is a reluctant damage-limiter, NOT a hard spend cap:
+    * Budgets refresh cost data only a few times a day, so it lags hours.
+    * Recovery is manual: detach the SCP from the management account (which is
+      never bound by SCPs) — see the README.
+  Scoping the budget to the dev account intentionally excludes prod's annual
+  Route 53 domain renewal from the trigger.
+
+Parameters:
+  DevAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+    ConstraintDescription: Must be a 12-digit AWS account id.
+    Description: The dev account to monitor and quarantine.
+
+  QuarantineThreshold:
+    Type: Number
+    Default: 15
+    MinValue: 1
+    Description: ACTUAL monthly USD spend (dev account) that triggers quarantine. Default 15 = 3x the $5 dev budget.
+
+  NotificationEmail:
+    Type: String
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    ConstraintDescription: Must be a valid email address.
+    Description: Address notified when the quarantine action fires.
+
+Resources:
+  QuarantineScp:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: home-cost-quarantine
+      Type: SERVICE_CONTROL_POLICY
+      Description: Emergency cost quarantine — denies new cost-generating actions. Attached automatically by a budget action; detach manually to lift.
+      # No TargetIds: this policy stays DETACHED until the budget action attaches it.
+      Content: |-
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "DenyExpensiveCompute",
+              "Effect": "Deny",
+              "Action": [
+                "ec2:RunInstances",
+                "ec2:StartInstances",
+                "ec2:CreateFleet",
+                "ec2:RequestSpotInstances",
+                "ec2:RequestSpotFleet",
+                "ec2:RunScheduledInstances"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyAiInference",
+              "Effect": "Deny",
+              "Action": [
+                "bedrock:InvokeModel",
+                "bedrock:InvokeModelWithResponseStream",
+                "bedrock:Converse",
+                "bedrock:ConverseStream",
+                "bedrock:StartAsyncInvoke",
+                "bedrock:CreateModelInvocationJob",
+                "bedrock-agentcore:InvokeAgentRuntime",
+                "bedrock-agentcore:InvokeAgentRuntimeForUser",
+                "aws-external-anthropic:*"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyServerlessAndOrchestration",
+              "Effect": "Deny",
+              "Action": [
+                "lambda:InvokeFunction",
+                "lambda:InvokeFunctionUrl",
+                "states:StartExecution",
+                "states:StartSyncExecution",
+                "ecs:RunTask",
+                "ecs:StartTask",
+                "ecs:CreateService",
+                "ecs:UpdateService",
+                "apprunner:CreateService",
+                "apprunner:UpdateService",
+                "apprunner:StartDeployment",
+                "apprunner:ResumeService"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyDataAndMediaJobs",
+              "Effect": "Deny",
+              "Action": [
+                "athena:StartQueryExecution",
+                "transcribe:StartTranscriptionJob",
+                "transcribe:StartMedicalTranscriptionJob",
+                "translate:StartTextTranslationJob",
+                "mediaconvert:CreateJob",
+                "codebuild:StartBuild",
+                "codebuild:StartBuildBatch",
+                "imagebuilder:StartImagePipelineExecution"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+
+  QuarantineActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Role assumed by AWS Budgets to attach/detach the cost-quarantine SCP.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: budgets.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: attach-quarantine-scp
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "organizations:AttachPolicy"
+                  - "organizations:DetachPolicy"
+                  - "organizations:DescribePolicy"
+                  - "organizations:ListPolicies"
+                  - "organizations:ListPoliciesForTarget"
+                  - "organizations:ListTargetsForPolicy"
+                Resource: "*"
+
+  QuarantineBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: home-cost-quarantine-dev
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref QuarantineThreshold
+          Unit: USD
+        CostFilters:
+          LinkedAccount:
+            - !Ref DevAccountId
+
+  QuarantineAction:
+    Type: AWS::Budgets::BudgetsAction
+    DependsOn: QuarantineBudget
+    Properties:
+      BudgetName: home-cost-quarantine-dev
+      ActionType: APPLY_SCP_POLICY
+      ApprovalModel: AUTOMATIC
+      NotificationType: ACTUAL
+      ActionThreshold:
+        Type: ABSOLUTE_VALUE
+        Value: !Ref QuarantineThreshold
+      ExecutionRoleArn: !GetAtt QuarantineActionRole.Arn
+      Definition:
+        ScpActionDefinition:
+          PolicyId: !Ref QuarantineScp
+          TargetIds:
+            - !Ref DevAccountId
+      Subscribers:
+        - Type: EMAIL
+          Address: !Ref NotificationEmail
+
+Outputs:
+  QuarantineScpId:
+    Description: Policy id of the (normally detached) quarantine SCP.
+    Value: !Ref QuarantineScp
+  QuarantineActionRoleArn:
+    Description: Role AWS Budgets assumes to attach the quarantine SCP.
+    Value: !GetAtt QuarantineActionRole.Arn
+  ManualLiftCommand:
+    Description: Run this from the management account to lift an active quarantine.
+    Value: !Sub "aws organizations detach-policy --policy-id ${QuarantineScp} --target-id ${DevAccountId}"

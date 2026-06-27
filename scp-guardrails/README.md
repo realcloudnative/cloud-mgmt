@@ -15,7 +15,7 @@ services and actions are blocked by default until you explicitly allow them.
 | 01 | `region-lock` | Deny all actions outside the 5 allowed regions; global services exempt. |
 | 02 | `service-allowlist` | Deny any service not on the home allowlist. |
 | 03 | `ec2-instance-size` | Deny `ec2:RunInstances` for anything larger than `*.small`. |
-| 04 | `baseline-security` *(optional)* | Require IMDSv2; protect CloudTrail/GuardDuty; block leaving the org; keep EBS default encryption. |
+| 04 | `baseline-security` *(optional)* | Require IMDSv2 (launch + modify); require encrypted EBS volumes; keep EBS default encryption; protect CloudTrail/GuardDuty; protect account-level S3 Block Public Access; block IAM user/access-key creation; block leaving the org. |
 | 05 | `cost-control` *(optional)* | Block reserved/capacity commitments and Dedicated tenancy. |
 
 Each SCP is defined **once**, embedded in
@@ -106,28 +106,55 @@ Deny policies only subtract from it.
 
 ## Recommended additional Deny-Unless rules for a home setup
 
-Beyond the five included policies, these are worth considering. None are
-enabled unless you add them.
+### Now included in `baseline-security` (04)
+
+The following were added after review and ship in policy 04:
+
+- **IMDSv2 on existing instances** — deny `ec2:ModifyInstanceMetadataOptions`
+  that would re-enable IMDSv1 (`StringNotEqualsIfExists` so it only fires when a
+  caller explicitly sets `HttpTokens=optional`, never on unrelated edits like
+  hop limit).
+- **Require encrypted EBS** — deny `ec2:CreateVolume` / `ec2:RunInstances` when
+  `ec2:Encrypted = false`, on top of keeping EBS default encryption on.
+- **Protect account-level S3 Block Public Access** — deny
+  `s3:PutAccountPublicAccessBlock` and `s3:DeleteAccountPublicAccessBlock`.
+- **Block IAM users / long-lived keys** — deny `iam:CreateUser`,
+  `iam:CreateAccessKey`, `iam:CreateLoginProfile` (you use IAM Identity Center).
+
+> **Prerequisite for the S3 rule:** there is no condition key to tell "enable"
+> from "disable" on these calls, so the policy blocks the calls outright.
+> **Enable account-level S3 Block Public Access (all four settings) *before*
+> attaching policy 04** — otherwise this rule will also prevent you from turning
+> it on. Account-level BPA overrides per-bucket settings, which is why only the
+> account-level actions are blocked (bucket-level `Put` stays available).
+
+### Still optional / not done as SCPs
 
 1. **Remove root credentials from member accounts** (not an SCP). Use
-   centralized root access in Organizations to remove root sign-in from member
-   accounts entirely. This is why there is **no deny-root SCP here** — the
-   feature covers it more cleanly than a policy ever could.
-2. **Enforce IMDSv2 on existing instances**, not just launches — add a deny on
-   `ec2:ModifyInstanceMetadataOptions` that would re-enable IMDSv1.
-3. **Require encrypted EBS volumes** at create time
-   (`ec2:CreateVolume` / `RunInstances` unless `ec2:Encrypted = true`), in
-   addition to keeping default encryption on.
-4. **Block public S3** — deny `s3:PutAccountPublicAccessBlock` /
-   `s3:PutBucketPublicAccessBlock` calls that *disable* Block Public Access.
-5. **Protect the guardrails themselves** — deny detaching/deleting these SCPs
-   or modifying the CloudFormation execution role from within member accounts.
-6. **Deny IAM user / long-lived access key creation** to push everything
-   through IAM Identity Center and roles (`iam:CreateUser`,
-   `iam:CreateAccessKey`). Strong for home use, but confirm you have SSO set up
-   first.
-7. **Cap log/data retention churn** or deny deleting CloudWatch log groups, if
-   you rely on them for after-the-fact debugging.
+   centralized root access in Organizations — cleaner than any deny-root policy,
+   which is why there is no deny-root SCP here.
+2. **Protect the guardrails themselves** — deny detaching/deleting these SCPs or
+   modifying the CloudFormation execution role from within member accounts.
+
+### CloudWatch Logs retention — why it is *not* an SCP
+
+You asked to deny creating log groups that have **no** retention (infinite).
+This **cannot be done with an SCP**: `CreateLogGroup` has no retention
+parameter (groups are always created as "never expire"), and there is no
+`logs:` condition key for retention days — so there is nothing for a
+Deny-Unless rule to match at creation time.
+
+Enforceable alternatives:
+
+- **Auto-remediate (recommended):** an EventBridge rule on the `CreateLogGroup`
+  CloudTrail event triggering a small Lambda that calls `PutRetentionPolicy`
+  with a default (e.g. 30 days). This is the only way to *guarantee* finite
+  retention, and it fits the Lambda pattern already in `scheduled-switch/`.
+- **Complementary SCP guard:** deny `logs:DeleteRetentionPolicy` so an existing
+  retention can't be reverted back to infinite. (Not added yet — say the word.)
+
+> AWS Config has a managed rule for this (`cw-loggroup-retention-period-check`),
+> but Config bills per item and we've deliberately left it out for cost.
 
 ## Files
 
